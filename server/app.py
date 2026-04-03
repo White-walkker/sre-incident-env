@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 from .sre_environment import SREEnvironment
+from typing import Optional
 
 app = FastAPI(
     title="SRE Incident Response Environment",
@@ -27,9 +28,9 @@ class StepRequest(BaseModel):
 
 
 @app.post("/reset")
-def reset(request: ResetRequest):
-    return env.reset(task_id=request.task_id)
-
+def reset(request: Optional[ResetRequest] = None):
+    task_id = request.task_id if request else "easy"
+    return env.reset(task_id=task_id)
 
 @app.post("/step")
 def step(request: StepRequest):
