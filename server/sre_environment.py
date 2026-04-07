@@ -206,7 +206,7 @@ class SREEnvironment:
             if ("check_metrics", "kafka") in pairs: score += 0.1
             if ("rollback", "payment-service") in pairs: score += 0.4
             if self._is_resolved(): score += 0.3
-        return min(1.0, score)
+        return min(0.99, max(0.01, score))
 
     def _make_obs(self, reward: float, message: str) -> dict:
         return {
