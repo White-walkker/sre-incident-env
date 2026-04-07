@@ -1,15 +1,11 @@
 import os
 import json
 import urllib.request
-from openai import OpenAI
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 API_KEY      = os.getenv("API_KEY") or os.getenv("HF_TOKEN", "dummy")
 ENV_URL      = "https://yashasvi0903-sre-incident-env.hf.space"
-
-# Always use OpenAI client with injected credentials
-client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
 SYSTEM_PROMPT = """You are an expert Site Reliability Engineer.
 Respond with ONLY valid JSON, no extra text:
@@ -29,6 +25,29 @@ def http_post(url, data):
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def llm_call(messages):
+    """Call LLM via OpenAI-compatible API using only urllib."""
+    data = {
+        "model": MODEL_NAME,
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": 150,
+    }
+    body = json.dumps(data).encode("utf-8")
+    req = urllib.request.Request(
+        f"{API_BASE_URL}/chat/completions",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_KEY}",
+        },
+        method="POST"
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+        return result["choices"][0]["message"]["content"].strip()
 
 
 def log_start(task, env, model):
@@ -66,13 +85,9 @@ def get_action(obs, task_id, step, history):
                 f"What action do you take?")
     history.append({"role": "user", "content": user_msg})
     try:
-        resp = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
-            temperature=0.2,
-            max_tokens=150,
+        text = llm_call(
+            [{"role": "system", "content": SYSTEM_PROMPT}] + history
         )
-        text = resp.choices[0].message.content.strip()
         action = json.loads(text)
         history.append({"role": "assistant", "content": text})
         return action
@@ -117,3 +132,4 @@ def run_episode(task_id):
 if __name__ == "__main__":
     for task_id in ["easy", "medium", "hard"]:
         run_episode(task_id)
+        
