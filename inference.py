@@ -2,15 +2,11 @@ import os
 import json
 import urllib.request
 import urllib.error
-from openai import OpenAI
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 HF_TOKEN     = os.getenv("HF_TOKEN")
-
-ENV_URL = "https://yashasvi0903-sre-incident-env.hf.space"
-
-client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN or "dummy")
+ENV_URL      = "https://yashasvi0903-sre-incident-env.hf.space"
 
 SYSTEM_PROMPT = """You are an expert Site Reliability Engineer.
 Respond with ONLY valid JSON, no extra text:
@@ -63,12 +59,14 @@ def _rule_agent(task_id, step):
 def get_action(obs, task_id, step, history):
     if not HF_TOKEN:
         return _rule_agent(task_id, step)
-    user_msg = (f"ALERTS: {json.dumps(obs.get('alerts', []))}\n"
-                f"SERVICES: {json.dumps({k: v['status'] for k, v in obs.get('services', {}).items()})}\n"
-                f"LOGS: {json.dumps(obs.get('logs', {}))}\n"
-                f"What action do you take?")
-    history.append({"role": "user", "content": user_msg})
     try:
+        from openai import OpenAI
+        client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+        user_msg = (f"ALERTS: {json.dumps(obs.get('alerts', []))}\n"
+                    f"SERVICES: {json.dumps({k: v['status'] for k, v in obs.get('services', {}).items()})}\n"
+                    f"LOGS: {json.dumps(obs.get('logs', {}))}\n"
+                    f"What action do you take?")
+        history.append({"role": "user", "content": user_msg})
         resp = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
