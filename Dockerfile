@@ -1,4 +1,5 @@
-FROM python:3.11-slim-bullseye
+FROM ghcr.io/huggingface/text-generation-inference:latest AS base
+FROM python:3.11
 
 WORKDIR /app
 
