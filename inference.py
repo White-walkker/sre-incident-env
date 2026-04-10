@@ -1,14 +1,26 @@
 import os
 import json
 import urllib.request
+from openai import OpenAI
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-API_KEY      = os.getenv("API_KEY") or os.getenv("HF_TOKEN", "dummy")
-ENV_URL      = "https://yashasvi0903-sre-incident-env.hf.space"
+# Required environment variables
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME", "gpt-4.1-mini")
+HF_TOKEN     = os.getenv("HF_TOKEN")
+
+if HF_TOKEN is None:
+    raise ValueError("HF_TOKEN environment variable is required")
+
+# Initialize OpenAI client — exactly as required
+client = OpenAI(
+    base_url=API_BASE_URL,
+    api_key=HF_TOKEN
+)
+
+ENV_URL = "https://yashasvi0903-sre-incident-env.hf.space"
 
 SYSTEM_PROMPT = """You are an expert Site Reliability Engineer.
-Respond with ONLY valid JSON, no extra text, no markdown:
+Respond with ONLY valid JSON, no extra text:
 {
   "action_type": "one of: check_logs, check_metrics, restart_service, scale_up, rollback, list_alerts, list_services",
   "target": "one of: payment-service, api-gateway, auth-service, database, kafka",
@@ -16,35 +28,15 @@ Respond with ONLY valid JSON, no extra text, no markdown:
 }"""
 
 
-def http_post(url, data, auth=None):
-    """Generic HTTP POST using only stdlib urllib."""
+def http_post(url, data):
     body = json.dumps(data).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
-    if auth:
-        headers["Authorization"] = f"Bearer {auth}"
     req = urllib.request.Request(
-        url, data=body, headers=headers, method="POST"
+        url, data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST"
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
-
-
-def llm_call(messages):
-    """
-    Always calls the injected LLM proxy.
-    Uses API_BASE_URL and API_KEY from environment — never hardcoded.
-    """
-    result = http_post(
-        f"{API_BASE_URL}/chat/completions",
-        {
-            "model": MODEL_NAME,
-            "messages": messages,
-            "temperature": 0.2,
-            "max_tokens": 200,
-        },
-        auth=API_KEY
-    )
-    return result["choices"][0]["message"]["content"].strip()
 
 
 def log_start(task, env, model):
@@ -52,63 +44,38 @@ def log_start(task, env, model):
 
 
 def log_step(step, action, reward, done, error):
-    print(
-        f"[STEP] step={step} action={action} "
-        f"reward={reward:.2f} done={str(done).lower()} "
-        f"error={error or 'null'}",
-        flush=True
-    )
+    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error or 'null'}", flush=True)
 
 
 def log_end(success, steps, score, rewards):
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(
-        f"[END] success={str(success).lower()} "
-        f"steps={steps} score={score:.3f} "
-        f"rewards={rewards_str}",
-        flush=True
-    )
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
 
 
 def get_action(obs, history):
-    """
-    Always calls LLM proxy — no fallback bypass.
-    If LLM response is unparseable JSON, retries with a simpler prompt.
-    """
     user_msg = (
-        f"Active alerts: {json.dumps(obs.get('alerts', []))}\n"
-        f"Service statuses: {json.dumps({k: v['status'] for k, v in obs.get('services', {}).items()})}\n"
-        f"Recent logs: {json.dumps(obs.get('logs', {}))}\n"
-        f"Choose your next action."
+        f"ALERTS: {json.dumps(obs.get('alerts', []))}\n"
+        f"SERVICES: {json.dumps({k: v['status'] for k, v in obs.get('services', {}).items()})}\n"
+        f"LOGS: {json.dumps(obs.get('logs', {}))}\n"
+        f"What action do you take?"
     )
     history.append({"role": "user", "content": user_msg})
 
-    # First attempt
-    text = llm_call(
-        [{"role": "system", "content": SYSTEM_PROMPT}] + history
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
+        temperature=0.2,
+        max_tokens=200,
     )
+    text = response.choices[0].message.content.strip()
     history.append({"role": "assistant", "content": text})
 
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # Second attempt with stricter prompt
-        retry_messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content":
-                "Respond with ONLY this JSON and nothing else:\n"
-                '{"action_type": "list_alerts", "target": "api-gateway", "reasoning": "checking alerts"}'}
-        ]
-        text2 = llm_call(retry_messages)
-        try:
-            return json.loads(text2)
-        except json.JSONDecodeError:
-            # Last resort — still goes through proxy, just hardcoded action
-            return {
-                "action_type": "list_alerts",
+        return {"action_type": "list_alerts",
                 "target": "api-gateway",
-                "reasoning": "fallback after parse error"
-            }
+                "reasoning": "parse error fallback"}
 
 
 def run_episode(task_id):
@@ -143,12 +110,11 @@ def run_episode(task_id):
                 break
 
         score = float(obs.get("reward", 0.0))
-        # Clamp strictly between 0 and 1 (not 0.0, not 1.0)
         score = min(0.99, max(0.01, score))
         success = score >= 0.5
 
     except Exception as e:
-        print(f"[DEBUG] Episode error: {e}", flush=True)
+        print(f"[DEBUG] Exception: {e}", flush=True)
 
     finally:
         log_end(success=success, steps=steps_taken,
