@@ -3,19 +3,11 @@ import json
 import urllib.request
 from openai import OpenAI
 
-# Required environment variables
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-HF_TOKEN     = os.getenv("HF_TOKEN")
+HF_TOKEN     = os.getenv("HF_TOKEN", "dummy")
 
-if HF_TOKEN is None:
-    raise ValueError("HF_TOKEN environment variable is required")
-
-# Initialize OpenAI client — exactly as required
-client = OpenAI(
-    base_url=API_BASE_URL,
-    api_key=HF_TOKEN
-)
+client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
 ENV_URL = "https://yashasvi0903-sre-incident-env.hf.space"
 
@@ -60,28 +52,25 @@ def get_action(obs, history):
         f"What action do you take?"
     )
     history.append({"role": "user", "content": user_msg})
-
-    response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
-        temperature=0.2,
-        max_tokens=200,
-    )
-    text = response.choices[0].message.content.strip()
-    history.append({"role": "assistant", "content": text})
-
     try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
+            temperature=0.2,
+            max_tokens=200,
+        )
+        text = response.choices[0].message.content.strip()
+        history.append({"role": "assistant", "content": text})
         return json.loads(text)
-    except json.JSONDecodeError:
+    except Exception as e:
+        print(f"[DEBUG] get_action error: {e}", flush=True)
         return {"action_type": "list_alerts",
                 "target": "api-gateway",
-                "reasoning": "parse error fallback"}
+                "reasoning": "fallback"}
 
 
 def run_episode(task_id):
     log_start(task=task_id, env="sre-incident-env", model=MODEL_NAME)
-
-    obs = http_post(f"{ENV_URL}/reset", {"task_id": task_id})
     rewards = []
     history = []
     steps_taken = 0
@@ -89,23 +78,20 @@ def run_episode(task_id):
     success = False
 
     try:
+        obs = http_post(f"{ENV_URL}/reset", {"task_id": task_id})
+
         for step in range(1, 16):
             if obs.get("done", False):
                 break
-
             action = get_action(obs, history)
             action_str = f"{action['action_type']}({action['target']})"
-
             obs = http_post(f"{ENV_URL}/step", action)
             reward = float(obs.get("reward", 0.0))
             done = obs.get("done", False)
-
             rewards.append(reward)
             steps_taken = step
-
             log_step(step=step, action=action_str,
                      reward=reward, done=done, error=None)
-
             if done:
                 break
 
@@ -114,7 +100,7 @@ def run_episode(task_id):
         success = score >= 0.5
 
     except Exception as e:
-        print(f"[DEBUG] Exception: {e}", flush=True)
+        print(f"[DEBUG] Episode error: {e}", flush=True)
 
     finally:
         log_end(success=success, steps=steps_taken,
